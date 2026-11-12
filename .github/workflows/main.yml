@@ -1,37 +1,55 @@
-name: macos
+# This is a basic workflow to help you get started with Actions
 
+name: build-macos
+
+# Controls when the workflow will run
 on:
-  push:
-    branches: [ master ]
-    paths-ignore: '**.md'
-  pull_request:
-    branches: [ master ]
-    paths-ignore: '**.md'
+  # this is a called workflow
+  workflow_call:
+    outputs:
+      build-file:
+        description: "The output of this build procsss"
+        value: ${{ jobs.macos-build-job.outputs.install-file }}
 
-  # Allows you to run this workflow manually from the Actions tab
-  workflow_dispatch:
-
+# A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
-  build:
-    strategy:
-      matrix:
-        OS: [macos-15]
+  # Build the installer on mac
+  macos-build-job:
+    # The type of runner that the job will run on
+    runs-on: macos-latest
+    
+    # Output
+    outputs:
+      install-file: ${{ steps.output-installer.outputs.filename }}
 
-    runs-on: ${{ matrix.OS }}
+    # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-          cache: 'pip'
 
-      - run: brew install eigen libomp
+      # Setup python
+      - name: System Setup
+        run: |
+          pip3 install pyserial pycryptodome pyinstaller Pillow pyqt5 darkdetect
+          brew install create-dmg
 
-      - run: pip install numpy scipy pytest
-      
-      - run: pip install .
-        env:
-          OpenMP_ROOT: /opt/homebrew/opt/libomp
+      # Build the installer
+      - name: Build Mac Installer
+        run: |
+          pyinstaller --windowed -n ArtemisUploader --noconsole --distpath=. --icon=artemis_uploader/resource/artemis-uploader.ico   --add-data="artemis_uploader/resource/*:resource/" artemis_upload.py
+          mkdir tmp
+          mv "ArtemisUploader.app" "tmp/"
+          create-dmg --volicon "artemis_uploader/resource/sparkdisk.icns" --background "artemis_uploader/resource/sfe_logo_med.png" --hide-extension "ArtemisUploader.app" --icon "ArtemisUploader.app" 100 100 --window-size 600 440 --app-drop-link 400 100 "ArtemisUploader.dmg" "tmp/"
+          
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ArtemisUploader.dmg
+          path: ArtemisUploader.dmg
 
-      - run: python -m pytest src/test/python_test.py -v
+      - id: output-installer
+        run: echo "filename=ArtemisUploader.dmg" >> $GITHUB_OUTPUT
+        
+        
