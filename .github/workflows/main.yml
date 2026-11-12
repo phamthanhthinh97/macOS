@@ -1,227 +1,117 @@
-name: macOS
-
-on:
-  pull_request:
-  push:
-    branches:
-      - dev
-      - release
+name: Mac OS CI
+on: [push, pull_request]
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
   build-macos:
-    # Build the release tarball. The jobs below download it, so that they do not
-    # have to build the compiler again.
-    name: build-macos
-    strategy:
-      matrix:
-        # macos-15: arm64 (oldest supported version as of 16-10-2026)
-        # macos-15-intel: amd64 (last intel version to be supported by github runners)
-        # See https://github.com/actions/runner-images/issues/13046
-        os: [macos-15, macos-15-intel]
-        include:
-          - os: macos-15
-            goarch: arm64
-          - os: macos-15-intel
-            goarch: amd64
-    runs-on: ${{ matrix.os }}
-    steps:
-      - name: Install Dependencies
-        run: |
-          HOMEBREW_NO_AUTO_UPDATE=1 brew install qemu binaryen
-      - name: Checkout
-        uses: actions/checkout@v6
-      - uses: ./.github/actions/submodules
-      - name: Extract TinyGo version
-        id: version
-        run: ./.github/workflows/tinygo-extract-version.sh | tee -a "$GITHUB_OUTPUT"
-      - name: Install Go
-        uses: actions/setup-go@v6
-        with:
-          go-version: '1.27.1'
-          cache: true
-      - uses: ./.github/actions/setup-llvm-macos
-        with:
-          os: ${{ matrix.os }}
-      - name: Build TinyGo release tarball
-        run: make release -j3
-      - name: Make release artifact
-        run: cp -p build/release.tar.gz build/tinygo${{ steps.version.outputs.version }}.darwin-${{ matrix.goarch }}.tar.gz
-      - name: Publish release artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: darwin-${{ matrix.goarch }}-double-zipped-${{ steps.version.outputs.version }}
-          path: build/tinygo${{ steps.version.outputs.version }}.darwin-${{ matrix.goarch }}.tar.gz
-          archive: false
-
-  test-macos:
-    # The compiler test suite. It needs LLVM, thus it cannot use the release
-    # tarball. It restores the LLVM cache and runs at the same time as
-    # build-macos. Only build-macos saves that cache. The intel runner only
-    # runs the smoke tests below, as the full suite is slow there.
-    name: test-macos
-    runs-on: macos-15
-    steps:
-      - name: Install Dependencies
-        run: |
-          HOMEBREW_NO_AUTO_UPDATE=1 brew install qemu binaryen
-      - name: Checkout
-        uses: actions/checkout@v6
-      - uses: ./.github/actions/submodules
-      - name: Install Go
-        uses: actions/setup-go@v6
-        with:
-          go-version: '1.27.1'
-          cache: true
-      - uses: ./.github/actions/setup-llvm-macos
-        with:
-          os: macos-15
-          save-cache: "false"
-      - uses: ./.github/actions/gen-device
-        with:
-          jobs: "3"
-      - name: Test TinyGo
-        run: make test GOTESTFLAGS="-short"
-
-  stdlib-test-macos:
-    # Test the standard library, compiled and run on the host itself.
-    name: stdlib-test-macos
-    needs: build-macos
-    runs-on: macos-15
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-      - name: Extract TinyGo version
-        id: version
-        run: ./.github/workflows/tinygo-extract-version.sh | tee -a "$GITHUB_OUTPUT"
-      - name: Install Go
-        uses: actions/setup-go@v6
-        with:
-          go-version: '1.27.1'
-          cache: true
-      - name: Download TinyGo build
-        uses: actions/download-artifact@v8
-        with:
-          # An artifact uploaded with "archive: false" takes the name of the
-          # file, not the name given to upload-artifact. See the comment on
-          # "Collect the release files" in release.yml.
-          name: tinygo${{ steps.version.outputs.version }}.darwin-arm64.tar.gz
-          path: build/
-          skip-decompress: true
-      - name: Unpack TinyGo build
-        run: |
-          tarball=$(find build -type f -name 'tinygo*.darwin-*.tar.gz' | head -1)
-          test -n "$tarball"
-          tar -xzf "$tarball" -C build
-      - name: Test stdlib packages
-        run: make tinygo-test TINYGO=$(PWD)/build/tinygo/bin/tinygo
-
-  smoke-test-macos:
-    # Cross compilation gives the same result on every host. Thus only one macOS
-    # runner does the full set, and the other one does the host dependent part
-    # plus a canary. See the smoketest-linux comment in linux.yml.
-    name: smoke-test-macos
-    needs: build-macos
-    strategy:
-      matrix:
-        os: [macos-15, macos-15-intel]
-        include:
-          - os: macos-15
-            goarch: arm64
-            smoketest: smoketest-quick
-          - os: macos-15-intel
-            goarch: amd64
-            smoketest: smoketest-host
-    runs-on: ${{ matrix.os }}
-    steps:
-      - name: Install Dependencies
-        run: |
-          HOMEBREW_NO_AUTO_UPDATE=1 brew install binaryen
-      - name: Checkout
-        uses: actions/checkout@v6
-      - name: Extract TinyGo version
-        id: version
-        run: ./.github/workflows/tinygo-extract-version.sh | tee -a "$GITHUB_OUTPUT"
-      - name: Install Go
-        uses: actions/setup-go@v6
-        with:
-          go-version: '1.27.1'
-          cache: true
-      - name: Download TinyGo build
-        uses: actions/download-artifact@v8
-        with:
-          # An artifact uploaded with "archive: false" takes the name of the
-          # file, not the name given to upload-artifact. See the comment on
-          # "Collect the release files" in release.yml.
-          name: tinygo${{ steps.version.outputs.version }}.darwin-${{ matrix.goarch }}.tar.gz
-          path: build/
-          skip-decompress: true
-      - name: Unpack TinyGo build
-        run: |
-          tarball=$(find build -type f -name 'tinygo*.darwin-*.tar.gz' | head -1)
-          test -n "$tarball"
-          tar -xzf "$tarball" -C build
-      - name: Smoke tests
-        run: make ${{ matrix.smoketest }} TINYGO=$(PWD)/build/tinygo/bin/tinygo
-
-  test-macos-homebrew:
-    name: homebrew-install
     runs-on: macos-latest
     strategy:
+      fail-fast: false
       matrix:
-        version: [16, 21, 22, 23]
+        # Fully declare each matrix entry here, as otherwise it's possible
+        # to get unexpected results due to the way the entries get expanded
+        # (See https://magmanu.github.io/blog/tech/matrices-github-actions/)
+        include:
+          # configure
+          - use-configure: use-configure
+            htssrc: hidden-htslib
+            sanitize: no-sanitize
+
+          # make only
+          - use-configure: no-configure
+            htssrc: htslib
+            sanitize: no-sanitize
+
+          # configure, sanitize
+          - use-configure: use-configure
+            htssrc: hidden-htslib
+            sanitize: sanitize
+
+    defaults:
+      run:
+        working-directory: ./samtools
+
     steps:
-      - name: Set up Homebrew
-        uses: Homebrew/actions/setup-homebrew@main
-      - name: Fix Python symlinks
-        run: |
-          # Github runners have broken symlinks, so relink
-          # see: https://github.com/actions/setup-python/issues/577
-          brew list -1 | grep python | while read formula; do brew unlink $formula; brew link --overwrite $formula; done
-      - name: Install LLVM
-        run: |
-          brew install llvm@${{ matrix.version }}
-          brew link llvm@${{ matrix.version }}
-      - name: Install lld, binaryen
-        run: |
-          # llvm@20 and later do not ship lld, so users install it after the
-          # first link fails. Older llvm@N formulas still ship it.
-          command -v ld.lld >/dev/null || brew install lld
-          brew install binaryen
-      - name: Checkout
-        uses: actions/checkout@v6
-      - name: Pull wasi-libc, macos-minimal-sdk, bdwgc
-        run: |
-          git submodule update --init lib/wasi-libc lib/macos-minimal-sdk lib/bdwgc
-      - name: Restore LLVM source cache
-        uses: actions/cache/restore@v5
-        id: cache-llvm-source
-        with:
-          key: llvm-source-22-macos-homebrew-${{ hashFiles('llvm-version.txt') }}
-          path: llvm-project/compiler-rt
-      - name: Download LLVM source
-        if: steps.cache-llvm-source.outputs.cache-hit != 'true'
-        run: make llvm-source
-      - name: Save LLVM source cache
-        uses: actions/cache/save@v5
-        if: steps.cache-llvm-source.outputs.cache-hit != 'true'
-        with:
-          key: ${{ steps.cache-llvm-source.outputs.cache-primary-key }}
-          path: llvm-project/compiler-rt
-      - name: Install Go
-        uses: actions/setup-go@v6
-        with:
-          go-version: '1.27.1'
-          cache: true
-      - name: Build TinyGo (LLVM ${{ matrix.version }})
-        run: go install -tags=llvm${{ matrix.version }}
-      - name: Check binary
-        run: tinygo version
-      - name: Link test programs
-        run: |
-          tinygo build -o "$RUNNER_TEMP/alias" testdata/alias.go
-          "$RUNNER_TEMP/alias" | diff - testdata/alias.txt
-          tinygo build -target=wasm-unknown -o "$RUNNER_TEMP/alias.wasm" testdata/alias.go
+    - name: Checkout
+      # This is actions/checkout@v6.0.2
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      with:
+        persist-credentials: false
+        fetch-depth: 3
+        path: samtools
+
+    - name: Install autotools
+      working-directory: .
+      run: |
+        brew install autoconf automake libtool
+
+    - name: Clone htslib
+      working-directory: .
+      run: |
+        mkdir -p ${{ matrix.htssrc }}
+        cd samtools
+        .ci_helpers/clone ${GITHUB_REPOSITORY_OWNER} htslib ../${{ matrix.htssrc }} ${GITHUB_HEAD_REF:-$GITHUB_REF_NAME} ${{ github.sha }}
+
+    - name: Set build options
+      run: |
+        cc='clang'
+        configure_opts='--enable-werror'
+        cflags='-g -O3 -arch arm64 -arch x86_64'
+        ldflags='-arch arm64 -arch x86_64'
+
+        if [ '${{ matrix.sanitize }}' = 'sanitize' ] ; then
+          cflags="-g -Og -fsanitize=address,undefined -Wno-format-truncation -Wno-format-overflow -arch arm64 -arch x86_64 -DHTS_ALLOW_UNALIGNED=0"
+          ldflags='-fsanitize=address,undefined -arch arm64 -arch x86_64'
+        fi
+
+        echo "cc=${cc}" >> "$GITHUB_ENV"
+        echo "configure_opts=${configure_opts}" >> "$GITHUB_ENV"
+        echo "cflags=${cflags}" >> "$GITHUB_ENV"
+        echo "ldflags=${ldflags}" >> "$GITHUB_ENV"
+
+    - name: Build htslib
+      working-directory: ${{ matrix.htssrc }}
+      run: |
+        htsdir="`realpath ..`/installed-htslib"
+        echo "htsdir=${htsdir}" >> "$GITHUB_ENV"
+
+        autoreconf -i
+        { ./configure --disable-ref-cache --prefix="$htsdir" ${configure_opts} ${cc:+CC="$cc"} ${cflags:+CFLAGS="$cflags"} ${ldflags:+LDFLAGS="$ldflags"} ||
+          { cat config.log ; false ; } ; } &&
+        make -j 5 &&
+        make install
+
+    - name: Configure samtools
+      if: ${{ matrix.use-configure == 'use-configure' }}
+      run: |
+        autoreconf -i
+
+        with_htslib="--with-htslib=$htsdir"
+        ldflags="${ldflags:+$ldflags }-Wl,-rpath,${htsdir}/lib"
+
+        printf "\nRunning ./configure ${with_htslib} ${configure_opts}${cc:+ CC='$cc'}${cflags:+ CFLAGS='$cflags'}${ldflags:+ LDFLAGS='$ldflags'} ...\n\n"
+
+        { ./configure $with_htslib ${configure_opts} ${cc:+CC="$cc"} ${cflags:+CFLAGS="$cflags"} ${ldflags:+LDFLAGS="$ldflags"} &&
+          { grep -qE 'CFLAGS *=.*-Werror' config.mk ||
+            { printf "\nStopping as -Werror was not set.\n" 1>&2 ; false ; } ;
+          } ;
+        } || { printf "\n### config.log content follows...\n\n" 1>&2 ; cat config.log ; false ; }
+
+    - name: Compile samtools
+      run: |
+        if [ '${{ matrix.use-configure }}' = 'use-configure' ] ; then
+          make -j5
+        else
+          make -j5 ${cc:+CC="$cc"} ${cflags:+CFLAGS="$cflags -Werror"}
+        fi
+
+    - name: Check
+      run: |
+        if [ '${{ matrix.use-configure }}' = 'use-configure' ] ; then
+          make check BGZIP=$htsdir/bin/bgzip
+        else
+          make check ${cc:+CC="$cc"} ${cflags:+CFLAGS="$cflags -Werror"}
+        fi
